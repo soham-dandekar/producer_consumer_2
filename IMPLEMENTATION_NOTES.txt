@@ -1,0 +1,82 @@
+PRODUCER-CONSUMER IMPLEMENTATION SUMMARY
+========================================
+
+SUBMITTED FILES:
+1. main.c      - Main program with process creation and semaphore operations
+2. buff.h      - Header file defining the shared buffer structure
+3. buff.c      - Buffer operations (insert, remove, display)
+
+ADDITIONAL FILES:
+- Makefile     - Build configuration for easy compilation
+- README.md    - Comprehensive documentation
+
+REQUIREMENTS SATISFACTION:
+==========================
+
+1. SHARED MEMORY (REQUIRED)
+   - Uses shmget() to create shared memory segment (line 52 in main.c)
+   - Uses shmat() to attach shared memory (line 59 in main.c)
+   - Parent removes shared memory using shmctl() with IPC_RMID (line 162 in main.c)
+
+2. SEMAPHORE SET WITH 3 SEMAPHORES (REQUIRED)
+   - Creates semaphore set with 3 semaphores using semget() (line 71 in main.c)
+   - SEM_MUTEX (index 0): For mutual exclusion
+   - SEM_EMPTY (index 1): To count empty buffer slots
+   - SEM_FULL (index 2):  To count full buffer slots
+
+3. ATOMIC MULTI-SEMAPHORE OPERATIONS (REQUIRED)
+   - Uses semop() with multiple operations atomically (NOT separate calls)
+   - atomic_wait_two() function (line 250): Performs P() on two semaphores atomically
+   - atomic_signal_two() function (line 268): Performs V() on two semaphores atomically
+   - Both functions use a single semop() call with 2 operations
+
+4. THREE CHILD PROCESSES USING fork() (REQUIRED)
+   - Creates Producer1 using fork() (line 90 in main.c)
+   - Creates Producer2 using fork() (line 102 in main.c)
+   - Creates Consumer using fork() (line 114 in main.c)
+
+5. CLEAR SYNCHRONIZATION OUTPUT (REQUIRED)
+   The output clearly shows:
+   - When producers produce and insert items
+   - When consumer waits and consumes items
+   - Buffer state after each operation (showing count, head, tail)
+   - Proper blocking when buffer is full/empty
+
+SYNCHRONIZATION LOGIC:
+======================
+
+PRODUCER (lines 187-215):
+   1. Atomic P(empty) and P(mutex) - wait for empty slot and acquire lock
+   2. Critical section: insert item into buffer
+   3. Atomic V(mutex) and V(full) - release lock and signal full slot
+
+CONSUMER (lines 218-252):
+   1. Atomic P(full) and P(mutex) - wait for full slot and acquire lock
+   2. Critical section: remove item from buffer
+   3. Atomic V(mutex) and V(empty) - release lock and signal empty slot
+
+KEY FEATURES:
+=============
+- Circular buffer implementation (buffer wraps around using modulo)
+- Random sleep times to demonstrate synchronization under varying conditions
+- Proper cleanup of all IPC resources (shared memory and semaphores)
+- Comprehensive error checking for all system calls
+- Cross-platform support for Linux and macOS
+- Well-commented code explaining each operation
+
+COMPILATION:
+============
+make
+
+EXECUTION:
+==========
+./producer_consumer
+
+The program will:
+1. Create shared memory and semaphores
+2. Fork 3 child processes (2 producers, 1 consumer)
+3. Producers each produce 10 items (20 total)
+4. Consumer consumes all 20 items
+5. All processes coordinate using semaphores
+6. Parent waits for children and cleans up resources
+

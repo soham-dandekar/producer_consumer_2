@@ -1,0 +1,249 @@
+================================================================================
+        PRODUCER-CONSUMER: SHARED MEMORY & SEMAPHORE ARCHITECTURE
+================================================================================
+
+STEP 1: PARENT PROCESS CREATES IPC RESOURCES
+=============================================
+
+                         PARENT PROCESS (main)
+                         +-------------------+
+                         |                   |
+                         |  shm_key = ftok() |
+                         |  sem_key = ftok() |
+                         |                   |
+                         +--------+----------+
+                                  |
+                    +-------------+-------------+
+                    |                           |
+                    v                           v
+          +-------------------+       +-------------------+
+          |   shmget()        |       |   semget()        |
+          |   Creates SHM     |       |   Creates SEM SET |
+          |   Returns: shm_id |       |   Returns: sem_id |
+          +-------------------+       +-------------------+
+                    |                           |
+                    v                           v
+        +-----------------------+   +-----------------------+
+        |   KERNEL SPACE        |   |   KERNEL SPACE        |
+        |-----------------------|   |-----------------------|
+        | SHARED MEMORY SEGMENT |   | SEMAPHORE SET         |
+        | ID: shm_id (e.g. 65536|   | ID: sem_id (e.g. 65543|
+        |                       |   |                       |
+        | Contains:             |   | Contains 3 semaphores:|
+        | - shared_buffer_t     |   | [0] SEM_MUTEX  = 1    |
+        |   - buffer[5]         |   | [1] SEM_EMPTY  = 5    |
+        |   - head, tail, count |   | [2] SEM_FULL   = 0    |
+        +-----------------------+   +-----------------------+
+                    ^                           ^
+                    |                           |
+                    +-------------+-------------+
+                                  |
+                    All processes access via IDs
+
+
+STEP 2: PARENT ATTACHES TO SHARED MEMORY
+=========================================
+
+                         PARENT PROCESS
+                         +-------------------+
+                         |                   |
+                         | shmat(shm_id)     |
+                         | Returns: *buf_ptr |
+                         |                   |
+                         +--------+----------+
+                                  |
+                                  v
+        +-----------------------+
+        | SHARED MEMORY SEGMENT |
+        |-----------------------|
+        | Parent can now        |
+        | read/write via        |
+        | shared_buf pointer    |
+        +-----------------------+
+
+
+STEP 3: PARENT FORKS CHILD PROCESSES
+=====================================
+
+                              PARENT PROCESS
+                              +--------------+
+                              | shm_id: 65536|
+                              | sem_id: 65543|
+                              | shared_buf*  |
+                              +------+-------+
+                                     |
+         +---------------------------+---------------------------+
+         |                           |                           |
+         v                           v                           v
+    fork() #1                   fork() #2                   fork() #3
+         |                           |                           |
+         v                           v                           v
+  +-------------+             +-------------+             +-------------+
+  | PRODUCER 1  |             | PRODUCER 2  |             | CONSUMER    |
+  | (Child PID) |             | (Child PID) |             | (Child PID) |
+  |             |             |             |             |             |
+  | INHERITS:   |             | INHERITS:   |             | INHERITS:   |
+  | shm_id:65536|             | shm_id:65536|             | shm_id:65536|
+  | sem_id:65543|             | sem_id:65543|             | sem_id:65543|
+  | shared_buf* |             | shared_buf* |             | shared_buf* |
+  +-------------+             +-------------+             +-------------+
+
+
+STEP 4: ALL PROCESSES ACCESS SAME KERNEL RESOURCES
+===================================================
+
++-------------+      +-------------+      +-------------+      +-------------+
+| PARENT      |      | PRODUCER 1  |      | PRODUCER 2  |      | CONSUMER    |
+| PROCESS     |      | (Child)     |      | (Child)     |      | (Child)     |
++------+------+      +------+------+      +------+------+      +------+------+
+       |                    |                    |                    |
+       | shm_id: 65536      | shm_id: 65536      | shm_id: 65536      | shm_id: 65536
+       | sem_id: 65543      | sem_id: 65543      | sem_id: 65543      | sem_id: 65543
+       |                    |                    |                    |
+       +--------------------+--------------------+--------------------+
+                                      |
+                                      v
+                   +------------------+------------------+
+                   |                                     |
+                   v                                     v
+      +---------------------------+       +---------------------------+
+      | KERNEL: SHARED MEMORY     |       | KERNEL: SEMAPHORE SET     |
+      |---------------------------|       |---------------------------|
+      | ID: 65536                 |       | ID: 65543                 |
+      |                           |       |                           |
+      | Single shared buffer      |       | [0] mutex  = 0 or 1       |
+      | accessible by all         |       | [1] empty  = 0 to 5       |
+      |                           |       | [2] full   = 0 to 5       |
+      |                           |       |                           |
+      | When Producer1 writes     |       | When Producer1 does V():  |
+      | here, Consumer sees it    |       | Consumer's P() unblocks   |
+      +---------------------------+       +---------------------------+
+
+
+HOW CHILDREN ACCESS SHARED RESOURCES
+=====================================
+
+1. SHARED MEMORY ACCESS:
+   
+   Producer1:                           Consumer:
+   +-----------------+                  +-----------------+
+   | Uses shm_id     |                  | Uses shm_id     |
+   | (inherited)     |                  | (inherited)     |
+   |                 |                  |                 |
+   | shared_buf*     |                  | shared_buf*     |
+   | points to same  |                  | points to same  |
+   | kernel memory   |                  | kernel memory   |
+   |                 |                  |                 |
+   | buffer_insert() |                  | buffer_remove() |
+   +-----------------+                  +-----------------+
+           |                                    |
+           +------------------------------------+
+                            |
+                            v
+              +--------------------------+
+              | SAME physical memory in  |
+              | kernel - synchronized    |
+              | access via semaphores    |
+              +--------------------------+
+
+
+2. SEMAPHORE ACCESS:
+
+   Producer1:                           Consumer:
+   +-----------------+                  +-----------------+
+   | Uses sem_id     |                  | Uses sem_id     |
+   | (inherited)     |                  | (inherited)     |
+   |                 |                  |                 |
+   | semop(sem_id,   |                  | semop(sem_id,   |
+   |   operations,2) |                  |   operations,2) |
+   |                 |                  |                 |
+   | P(empty)        |                  | P(full)         |
+   | P(mutex)        |                  | P(mutex)        |
+   | ... insert ...  |                  | ... remove ...  |
+   | V(mutex)        |                  | V(mutex)        |
+   | V(full)         |                  | V(empty)        |
+   +-----------------+                  +-----------------+
+           |                                    |
+           +------------------------------------+
+                            |
+                            v
+              +--------------------------+
+              | SAME semaphores in kernel|
+              | Operations are atomic    |
+              | and synchronized         |
+              +--------------------------+
+
+
+SYNCHRONIZATION EXAMPLE
+========================
+
+TIME  | PRODUCER1         | PRODUCER2         | CONSUMER          | SEMAPHORES
+------|-------------------|-------------------|-------------------|------------------
+  t0  | P(empty,mutex)    |                   |                   | empty:4, mutex:0
+      | BLOCKS on mutex   |                   |                   | full:0
+------|-------------------|-------------------|-------------------|------------------
+  t1  |                   | P(empty,mutex)    |                   | empty:4, mutex:0
+      |                   | WAITING           |                   | full:0
+------|-------------------|-------------------|-------------------|------------------
+  t2  |                   |                   | P(full,mutex)     | empty:4, mutex:0
+      |                   |                   | BLOCKS on full    | full:0
+------|-------------------|-------------------|-------------------|------------------
+  t3  | Insert item       |                   |                   | empty:4, mutex:0
+      | V(mutex,full)     |                   |                   | full:0
+------|-------------------|-------------------|-------------------|------------------
+  t4  | DONE              |                   | WAKES UP!         | empty:4, mutex:0
+      |                   |                   | Acquires mutex    | full:1
+------|-------------------|-------------------|-------------------|------------------
+  t5  |                   | Still waiting     | Remove item       | empty:4, mutex:0
+      |                   | for mutex         | V(mutex,empty)    | full:0
+------|-------------------|-------------------|-------------------|------------------
+  t6  |                   | WAKES UP!         | DONE              | empty:5, mutex:1
+      |                   | Acquires mutex    |                   | full:0
+------|-------------------|-------------------|-------------------|------------------
+
+
+KEY POINTS
+==========
+
+1. IPC objects (shared memory & semaphores) exist in KERNEL SPACE
+2. Process memory is SEPARATE - only IDs are inherited through fork()
+3. All processes use the SAME IDs to access SAME kernel objects
+4. Shared memory pointer (shared_buf*) in each process maps to SAME physical memory
+5. Semaphores ensure atomic operations and prevent race conditions
+6. No data copying - true shared access to same memory region
+7. Parent must clean up IPC resources (shmctl, semctl with IPC_RMID)
+
+
+MEMORY LAYOUT
+=============
+
+ USER SPACE (Separate per process)     KERNEL SPACE (Shared)
++----------------------------------+   +----------------------------------+
+|  PARENT PROCESS                  |   |                                  |
+|  +---------------------------+   |   |  SHARED MEMORY SEGMENT           |
+|  | shm_id = 65536            |   |   |  ID: 65536                       |
+|  | sem_id = 65543            |---|----->  buffer[5] = {845,552,0,0,0}  |
+|  | shared_buf* --> kernel    |   |   |    head = 2, tail = 0            |
+|  +---------------------------+   |   |    count = 2                     |
++----------------------------------+   |                                  |
+                                       |  SEMAPHORE SET                   |
++----------------------------------+   |  ID: 65543                       |
+|  PRODUCER 1                      |   |    [0] mutex = 1                 |
+|  +---------------------------+   |   |    [1] empty = 3                 |
+|  | shm_id = 65536            |---|---+    [2] full  = 2                 |
+|  | sem_id = 65543            |---|---+                                  |
+|  | shared_buf* --> kernel    |   |   |                                  |
+|  +---------------------------+   |   +----------------------------------+
++----------------------------------+              ^
+                                                  |
++----------------------------------+              |
+|  PRODUCER 2                      |              |
+|  +---------------------------+   |              |
+|  | shm_id = 65536            |---|---All use same IDs to access
+|  | sem_id = 65543            |---|---same kernel resources
+|  | shared_buf* --> kernel    |   |
+|  +---------------------------+   |
++----------------------------------+
+
+================================================================================
+
